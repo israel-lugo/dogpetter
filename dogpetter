@@ -1,0 +1,120 @@
+#! /usr/bin/env python
+
+# DogPetter - pet a watchdog to keep it running
+
+# Copyright (C) 2017 Israel G. Lugo
+#
+# This file is part of DogPetter.
+#
+# DogPetter is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.
+#
+# DogPetter is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with DogPetter. If not, see <http://www.gnu.org/licenses/>.
+#
+# For suggestions, feedback or bug reports: israel.lugo@lugosys.com
+
+
+import os
+import sys
+import time
+
+
+def nullify_fds():
+    """Nullify (redirect to devnull) the standard file descriptors.
+
+    Redirects the standard streams (stdin, stdout, stderr) to the null
+    device. This is better than closing them, to avoid unexpected failures
+    from user code or child programs.
+
+    """
+    # open the null device, to replace the standard streams
+    fdin = os.open(os.devnull, os.O_RDONLY)
+    fdout = os.open(os.devnull, os.O_WRONLY)
+
+    # Close the Python standard files (NOTE: in the special case of these
+    # standard files, closing them does NOT close the underlying OS file
+    # descriptors)
+    sys.stdin.close()
+    sys.stdout.close()
+    sys.stderr.close()
+
+    # replace the OS standard file descriptors
+    os.dup2(fdin, 0)
+    os.dup2(fdout, 1)
+    os.dup2(fdout, 2)
+
+    # create new Python wrappers
+    sys.stdin = os.fdopen(0, 'rt')
+    sys.stdout = os.fdopen(1, 'wt')
+    sys.stderr = os.fdopen(2, 'wt')
+
+    os.close(fdin)
+    os.close(fdout)
+
+
+def run_as_daemon(f, args=None, kwargs=None):
+    """Run the specified callable in the background, as a daemon process.
+
+    Returns immediately after launching a new daemon process to run the
+    specified callable. After the callable returns, the daemon process will
+    exit.
+
+    """
+    pid = os.fork()
+    if pid != 0:
+        # running inside the parent, just return
+        return
+
+    # running inside the child
+
+    # we know we're not a process group leader because we're a child; will
+    # become one in our own new session
+    os.setsid()
+
+    # fork to become a non- process group leader, so we can never regain a
+    # controlling terminal
+    pid = os.fork()
+    if pid != 0:
+        # parent was only temporary
+        sys.exit(0)
+
+    os.chdir("/")
+    os.umask(0)
+
+    nullify_fds()
+
+    if args is None:
+        args = []
+    if kwargs is None:
+        kwargs = {}
+
+    f(*args, **kwargs)
+
+    sys.exit(0)
+
+
+def pet_watchdog(filename, interval):
+    """Open the watchdog and pet it every interval seconds.
+
+    This function never returns.
+
+    """
+    f = open(filename, "wb", buffering=0)
+
+    while True:
+        f.write(b'\x00')
+        time.sleep(interval)
+
+
+if __name__ == '__main__':
+    run_as_daemon(pet_watchdog, args=["/dev/watchdog", 20])
+
+    sys.exit(0)
